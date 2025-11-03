@@ -1,0 +1,14 @@
+# Copy this file to terraform.tfvars and fill in your values
+# terraform.tfvars is gitignored to protect sensitive data
+
+grafana_url  = "http://localhost:3000"
+grafana_auth = "admin:admin"  # Or use API token like "glsa_xxxxx"
+
+prometheus_url  = "http://localhost:9090"
+prometheus_type = "prometheus"  # or "mimir" for Grafana Mimir
+
+app_name = "my-application"
+
+# Alert configurations (optional)
+alert_email         = "team@example.com"
+alert_slack_webhook = ""  # https://hooks.slack.com/services/xxx/yyy/zzz
