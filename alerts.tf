@@ -82,7 +82,7 @@ resource "grafana_rule_group" "error_alerts" {
 
       datasource_uid = grafana_data_source.prometheus.uid
       model = jsonencode({
-        expr         = "sum(rate(http_requests_total{job=\"${var.app_name}\", status=~\"5..\"}[5m]))"
+        expr         = "sum(rate(http_server_requests_seconds_count{job=\"${var.app_name}\", status=~\"5..\"}[5m]))"
         refId        = "A"
         intervalMs   = 1000
         maxDataPoints = 43200
@@ -99,7 +99,7 @@ resource "grafana_rule_group" "error_alerts" {
 
       datasource_uid = grafana_data_source.prometheus.uid
       model = jsonencode({
-        expr         = "sum(rate(http_requests_total{job=\"${var.app_name}\"}[5m]))"
+        expr         = "sum(rate(http_server_requests_seconds_count{job=\"${var.app_name}\"}[5m]))"
         refId        = "B"
         intervalMs   = 1000
         maxDataPoints = 43200
@@ -186,7 +186,7 @@ resource "grafana_rule_group" "performance_alerts" {
 
       datasource_uid = grafana_data_source.prometheus.uid
       model = jsonencode({
-        expr         = "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"${var.app_name}\"}[5m])) by (le))"
+        expr         = "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=\"${var.app_name}\"}[5m])) by (le))"
         refId        = "A"
         intervalMs   = 1000
         maxDataPoints = 43200
@@ -249,7 +249,7 @@ resource "grafana_rule_group" "performance_alerts" {
 
       datasource_uid = grafana_data_source.prometheus.uid
       model = jsonencode({
-        expr         = "rate(process_cpu_seconds_total{job=\"${var.app_name}\"}[5m]) * 100"
+        expr         = "process_cpu_usage{job=\"${var.app_name}\"} * 100"
         refId        = "A"
         intervalMs   = 1000
         maxDataPoints = 43200
@@ -373,8 +373,107 @@ resource "grafana_rule_group" "resource_alerts" {
   folder_uid       = grafana_folder.app_monitoring.uid
   interval_seconds = 60
 
+  # High JVM Heap Memory Usage Alert
   rule {
-    name      = "High Memory Usage"
+    name      = "High JVM Heap Memory Usage"
+    condition = "C"
+
+    data {
+      ref_id = "A"
+
+      relative_time_range {
+        from = 600
+        to   = 0
+      }
+
+      datasource_uid = grafana_data_source.prometheus.uid
+      model = jsonencode({
+        expr         = "jvm_memory_used_bytes{job=\"${var.app_name}\", area=\"heap\"}"
+        refId        = "A"
+        intervalMs   = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id = "B"
+
+      relative_time_range {
+        from = 600
+        to   = 0
+      }
+
+      datasource_uid = grafana_data_source.prometheus.uid
+      model = jsonencode({
+        expr         = "jvm_memory_max_bytes{job=\"${var.app_name}\", area=\"heap\"}"
+        refId        = "B"
+        intervalMs   = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    # Calculate heap usage percentage
+    data {
+      ref_id = "C"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      datasource_uid = "__expr__"
+      model = jsonencode({
+        type       = "math"
+        expression = "(A / B) * 100"
+        refId      = "C"
+      })
+    }
+
+    # Threshold condition
+    data {
+      ref_id = "D"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      datasource_uid = "__expr__"
+      model = jsonencode({
+        type = "threshold"
+        conditions = [
+          {
+            evaluator = {
+              params = [85]  # Alert if heap usage > 85%
+              type   = "gt"
+            }
+            query = {
+              params = ["C"]
+            }
+          }
+        ]
+        refId = "D"
+      })
+    }
+
+    no_data_state  = "NoData"
+    exec_err_state = "Alerting"
+    for            = "5m"
+
+    annotations = {
+      summary     = "High JVM heap memory usage for ${var.app_name}"
+      description = "Heap usage is {{ $values.C.Value }}% (threshold: 85%)"
+    }
+
+    labels = {
+      severity = "warning"
+      team     = "backend"
+    }
+  }
+
+  # High GC Pause Time Alert
+  rule {
+    name      = "High GC Pause Time"
     condition = "B"
 
     data {
@@ -387,7 +486,7 @@ resource "grafana_rule_group" "resource_alerts" {
 
       datasource_uid = grafana_data_source.prometheus.uid
       model = jsonencode({
-        expr         = "process_resident_memory_bytes{job=\"${var.app_name}\"} / 1024 / 1024 / 1024"
+        expr         = "rate(jvm_gc_pause_seconds_sum{job=\"${var.app_name}\"}[5m]) / rate(jvm_gc_pause_seconds_count{job=\"${var.app_name}\"}[5m])"
         refId        = "A"
         intervalMs   = 1000
         maxDataPoints = 43200
@@ -408,7 +507,7 @@ resource "grafana_rule_group" "resource_alerts" {
         conditions = [
           {
             evaluator = {
-              params = [2]  # Alert if memory > 2GB
+              params = [0.1]  # Alert if avg GC pause > 100ms
               type   = "gt"
             }
             query = {
@@ -422,16 +521,114 @@ resource "grafana_rule_group" "resource_alerts" {
 
     no_data_state  = "NoData"
     exec_err_state = "Alerting"
-    for            = "10m"
+    for            = "5m"
 
     annotations = {
-      summary     = "High memory usage for ${var.app_name}"
-      description = "Memory usage is {{ $values.A.Value }}GB (threshold: 2GB)"
+      summary     = "High GC pause time for ${var.app_name}"
+      description = "Average GC pause time is {{ $values.A.Value }}s (threshold: 0.1s)"
     }
 
     labels = {
       severity = "warning"
-      team     = "infrastructure"
+      team     = "backend"
+    }
+  }
+
+  # Database Connection Pool Exhaustion Alert
+  rule {
+    name      = "Database Connection Pool Near Exhaustion"
+    condition = "C"
+
+    data {
+      ref_id = "A"
+
+      relative_time_range {
+        from = 300
+        to   = 0
+      }
+
+      datasource_uid = grafana_data_source.prometheus.uid
+      model = jsonencode({
+        expr         = "hikaricp_connections_active{job=\"${var.app_name}\"}"
+        refId        = "A"
+        intervalMs   = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    data {
+      ref_id = "B"
+
+      relative_time_range {
+        from = 300
+        to   = 0
+      }
+
+      datasource_uid = grafana_data_source.prometheus.uid
+      model = jsonencode({
+        expr         = "hikaricp_connections{job=\"${var.app_name}\"}"
+        refId        = "B"
+        intervalMs   = 1000
+        maxDataPoints = 43200
+      })
+    }
+
+    # Calculate pool usage percentage
+    data {
+      ref_id = "C"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      datasource_uid = "__expr__"
+      model = jsonencode({
+        type       = "math"
+        expression = "(A / B) * 100"
+        refId      = "C"
+      })
+    }
+
+    # Threshold condition
+    data {
+      ref_id = "D"
+
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+
+      datasource_uid = "__expr__"
+      model = jsonencode({
+        type = "threshold"
+        conditions = [
+          {
+            evaluator = {
+              params = [90]  # Alert if pool usage > 90%
+              type   = "gt"
+            }
+            query = {
+              params = ["C"]
+            }
+          }
+        ]
+        refId = "D"
+      })
+    }
+
+    no_data_state  = "NoData"
+    exec_err_state = "Alerting"
+    for            = "2m"
+
+    annotations = {
+      summary     = "Database connection pool near exhaustion for ${var.app_name}"
+      description = "Connection pool usage is {{ $values.C.Value }}% (threshold: 90%)"
+    }
+
+    labels = {
+      severity = "critical"
+      team     = "backend"
     }
   }
 }

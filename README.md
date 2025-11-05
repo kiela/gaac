@@ -1,18 +1,23 @@
-# Grafana Infrastructure as Code
+# Grafana Infrastructure as Code for Java Applications
 
-Professional Grafana configuration using Terraform. No manual clicking, no JSON tracking - pure infrastructure as code.
+Professional Grafana configuration using Terraform for Java applications with Micrometer metrics. No manual clicking, no JSON tracking - pure infrastructure as code.
 
 ## What's Included
 
-- **Dashboards**: Pre-configured dashboards with common application metrics
-  - Overview dashboard with request rate, error rate, response time
-  - Database metrics dashboard
-  - System resource monitoring (CPU, memory, connections)
-- **Alerts**: Production-ready alerting rules
-  - High error rate detection
-  - Performance degradation alerts
-  - Service availability monitoring
-  - Resource usage warnings
+- **Dashboards**: Comprehensive dashboards optimized for Java/Micrometer metrics
+  - **Application Overview**: Request rate, error rate, response time (avg, p50, p90, p95, p99)
+  - **JVM Metrics**: Heap/non-heap memory, garbage collection, thread states, class loading
+  - **Database Monitoring**: HikariCP connection pool metrics, acquire times, timeouts
+  - **Application Server**: Tomcat/Jetty thread pool monitoring
+  - **Per-endpoint Metrics**: Request rates and response times by URI
+  - **System Resources**: CPU and memory usage
+- **Alerts**: Production-ready alerting rules for Java applications
+  - HTTP error rate and response time degradation
+  - JVM heap memory exhaustion warnings
+  - High GC pause time alerts
+  - Database connection pool exhaustion
+  - CPU usage monitoring
+  - Service availability checks
 - **Data Sources**: Automated Prometheus/Mimir configuration
 - **Contact Points**: Email and Slack notifications
 
@@ -74,9 +79,16 @@ terraform plan
 Review what will be created. You should see:
 - 1 data source (Prometheus)
 - 1 folder
-- 2 dashboards
+- 2 dashboards (Application Overview + Database Metrics)
 - 4 rule groups with 7 alert rules
 - Contact points (if configured)
+
+The dashboards include:
+- **24 panels** covering HTTP metrics, JVM memory, GC, threads, connection pools, and more
+- **Response time percentiles** (p50, p90, p95, p99)
+- **Per-endpoint breakdown** for requests and latency
+- **HikariCP connection pool** monitoring
+- **Tomcat/Jetty thread pool** metrics
 
 ### 4. Deploy
 
@@ -219,27 +231,124 @@ resource "grafana_data_source" "postgres" {
 
 ## Metric Requirements
 
-The default dashboards expect your application to expose these Prometheus metrics:
+This monitoring setup is designed for **Java applications using Micrometer** to export Prometheus metrics. Micrometer is the metrics facade used by Spring Boot and many other Java frameworks.
 
-### HTTP Metrics
-- `http_requests_total` - Counter with labels: `status`, `method`
-- `http_request_duration_seconds` - Histogram
+### Required Micrometer Metrics
 
-### System Metrics
-- `process_cpu_seconds_total` - CPU usage
-- `process_resident_memory_bytes` - Memory usage
+#### HTTP Server Metrics
+- `http_server_requests_seconds_count` - Request counter with labels: `status`, `method`, `uri`
+- `http_server_requests_seconds_sum` - Total request duration
+- `http_server_requests_seconds_bucket` - Request duration histogram
+
+#### JVM Memory Metrics
+- `jvm_memory_used_bytes{area="heap"}` - Heap memory usage
+- `jvm_memory_used_bytes{area="nonheap"}` - Non-heap memory usage
+- `jvm_memory_max_bytes` - Maximum memory
+- `jvm_memory_committed_bytes` - Committed memory
+
+#### JVM Garbage Collection
+- `jvm_gc_pause_seconds_count` - GC event count
+- `jvm_gc_pause_seconds_sum` - Total GC pause time
+- Labels: `action`, `cause`
+
+#### JVM Thread Metrics
+- `jvm_threads_live` - Live thread count
+- `jvm_threads_daemon` - Daemon thread count
+- `jvm_threads_peak` - Peak thread count
+- `jvm_threads_states` - Thread count by state
+
+#### System Metrics
+- `system_cpu_usage` - System-wide CPU usage
+- `process_cpu_usage` - Process CPU usage
 - `process_start_time_seconds` - Process start time
-- `go_goroutines` - Active goroutines (for Go apps)
+- `jvm_classes_loaded` - Loaded class count
 
-### Database Metrics (optional)
-- `db_connections_active`
-- `db_connections_idle`
-- `db_query_duration_seconds`
+#### Database Connection Pool (HikariCP)
+- `hikaricp_connections_active` - Active connections
+- `hikaricp_connections_idle` - Idle connections
+- `hikaricp_connections` - Total connections
+- `hikaricp_connections_pending` - Pending connection requests
+- `hikaricp_connections_acquire_seconds_bucket` - Connection acquire time histogram
+- `hikaricp_connections_usage_seconds` - Connection usage duration
+- `hikaricp_connections_timeout_total` - Connection timeout counter
 
-**Don't have these metrics yet?**
-- Use [prometheus/client_golang](https://github.com/prometheus/client_golang) for Go
-- Use [prometheus-client](https://github.com/prometheus/client_python) for Python
-- Use [prom-client](https://github.com/siimon/prom-client) for Node.js
+#### Application Server Metrics (Optional)
+
+**Tomcat:**
+- `tomcat_threads_current_threads`
+- `tomcat_threads_busy_threads`
+- `tomcat_threads_config_max_threads`
+
+**Jetty:**
+- `jetty_threads_current`
+- `jetty_threads_busy`
+- `jetty_threads_config_max`
+
+### Setting Up Micrometer in Your Java Application
+
+#### Spring Boot (Automatic)
+
+Add Micrometer registry to your `pom.xml`:
+```xml
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-registry-prometheus</artifactId>
+</dependency>
+```
+
+Or `build.gradle`:
+```gradle
+implementation 'io.micrometer:micrometer-registry-prometheus'
+```
+
+Enable metrics endpoint in `application.yml`:
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  metrics:
+    enable:
+      jvm: true
+      process: true
+      system: true
+      tomcat: true
+      hikaricp: true
+```
+
+Metrics will be available at: `http://your-app:8080/actuator/prometheus`
+
+#### Plain Java (Manual Setup)
+
+```java
+// Add to your main class
+PrometheusMeterRegistry prometheusRegistry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+
+// Expose metrics endpoint (using Spark, Javalin, etc.)
+get("/metrics", (req, res) -> {
+    res.type("text/plain");
+    return prometheusRegistry.scrape();
+});
+
+// Bind JVM metrics
+new ClassLoaderMetrics().bindTo(prometheusRegistry);
+new JvmMemoryMetrics().bindTo(prometheusRegistry);
+new JvmGcMetrics().bindTo(prometheusRegistry);
+new JvmThreadMetrics().bindTo(prometheusRegistry);
+```
+
+### Prometheus Configuration
+
+Add your Java application to Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: 'my-java-app'
+    metrics_path: '/actuator/prometheus'  # or /metrics
+    static_configs:
+      - targets: ['localhost:8080']
+```
 
 ## Alert Configuration
 
@@ -248,22 +357,37 @@ The default dashboards expect your application to expose these Prometheus metric
 1. **High Error Rate** (Critical)
    - Triggers when 5xx errors > 5% of total requests
    - Evaluation: Every 1min, fires after 5min
+   - Team: backend
 
 2. **High Response Time** (Warning)
    - Triggers when p95 latency > 500ms
    - Evaluation: Every 1min, fires after 5min
+   - Team: backend
 
 3. **Service Down** (Critical)
    - Triggers when service is unreachable
    - Evaluation: Every 30s, fires after 2min
+   - Team: sre
 
 4. **High CPU Usage** (Warning)
-   - Triggers when CPU > 80%
+   - Triggers when process CPU usage > 80%
    - Evaluation: Every 1min, fires after 10min
+   - Team: infrastructure
 
-5. **High Memory Usage** (Warning)
-   - Triggers when memory > 2GB
-   - Evaluation: Every 1min, fires after 10min
+5. **High JVM Heap Memory Usage** (Warning)
+   - Triggers when heap usage > 85% of max
+   - Evaluation: Every 1min, fires after 5min
+   - Team: backend
+
+6. **High GC Pause Time** (Warning)
+   - Triggers when average GC pause > 100ms
+   - Evaluation: Every 1min, fires after 5min
+   - Team: backend
+
+7. **Database Connection Pool Near Exhaustion** (Critical)
+   - Triggers when active connections > 90% of pool size
+   - Evaluation: Every 1min, fires after 2min
+   - Team: backend
 
 ### Alert Routing
 
